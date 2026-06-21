@@ -7,6 +7,10 @@ pipeline {
         disableConcurrentBuilds()
         //retry(1)
     }
+     // Parameters passed to CD
+     // These come either:
+    // 1. From CI trigger OR
+    // 2. Manual "Build with Parameters"
     parameters{
         choice(name: 'ENVIRONMENT', choices: ['dev', 'qa', 'uat', 'pre-prod', 'prod'], description: 'Select your Environment')
         string(name: 'version',  description: 'Enter your application version')
@@ -17,18 +21,29 @@ pipeline {
         region = 'us-east-1'
         account_id = ''
         project = 'roboshop'
-        environment = ''
+        env_name = ''
         component = 'cart'
     }
 
     stages {
-        
         stage('Setup Environment'){
-            steps{
-                script{
-                    environment = params.ENVIRONMENT
-                    appVersion = params.version
-                    account_id = pipelineGlobals.getAccountID(environment)
+           steps {
+                script {
+                    /*
+                    Assign Jenkins parameters to environment variables.
+                    This makes them globally available in later stages.
+                     */
+                    env.env_name = params.ENVIRONMENT //example if i choose dev now the env_name = dev
+                    env.appVersion = params.version
+
+                    echo "Selected environment: ${env.env_name}"
+                    echo "App version: ${env.appVersion}"
+
+                    account_id = pipelineGlobals.getAccountID(env.env_name)
+
+                    echo "Environment  : ${env.env_name}"
+                    echo "App Version  : ${env.appVersion}"
+                    echo "Account ID  : ${account_id}"
                 }
             }
         }
@@ -59,14 +74,27 @@ pipeline {
             }
         }
         stage('Deploy'){
-            steps{
-                withAWS(region: 'us-east-1', credentials: "aws-creds-${environment}") {
-                    sh """
-                        aws eks update-kubeconfig --region ${region} --name ${project}-dev
-                        cd helm
-                        sed -i 's/IMAGE_VERSION/${appVersion}/g' values-${environment}.yaml
-                        helm upgrade --install ${component} -n ${project} -f values-${environment}.yaml .
-                    """
+            steps {
+                // Authenticate with AWS using Jenkins credentials
+                withAWS(region: 'us-east-1', credentials: "aws-creds-${env.env_name}"){
+                // Move into Helm chart directory
+                    dir('cart-deploy/helm') {
+                        sh """
+                            # Update kubeconfig for the target EKS cluster
+                            # Example: expense-dev, expense-qa, expense-prod
+                            aws eks update-kubeconfig --region ${region} --name ${project}-${env.env_name}
+
+                            # Replace IMAGE_VERSION in helm values file with the exact app version
+                            # values-dev.yaml / values-qa.yaml / etc
+                            sed -i "s/IMAGE_VERSION/${env.appVersion}/g" values-${env.env_name}.yaml
+
+                            # Verify replacement
+                            cat values-${env.env_name}.yaml
+
+                            # Deploy or upgrade application using Helm
+                            helm upgrade --install ${component} -n ${project} -f values-${env.env_name}.yaml .
+                        """
+                    }
                 }
             }
         }
